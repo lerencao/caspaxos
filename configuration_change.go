@@ -9,12 +9,19 @@ import (
 
 // Proposer models a concrete proposer.
 type Proposer interface {
+	// Propose is the primary API for clients. All changes including reads are
+	// sent this way.
 	Propose(ctx context.Context, key string, f ChangeFunc) (newState []byte, err error)
 
+	// These methods are for configuration changes.
 	AddAccepter(target Acceptor) error
 	AddPreparer(target Acceptor) error
 	RemovePreparer(target Acceptor) error
 	RemoveAccepter(target Acceptor) error
+
+	// These methods are for garbage collection, for deletes.
+	FastForward() error
+	RemoveIfEmpty(ctx context.Context, key string) error
 }
 
 // Assign special meaning to the zero/empty key "", which we use to increment

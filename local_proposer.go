@@ -18,6 +18,7 @@ type Acceptor interface {
 	Addresser
 	Preparer
 	Accepter
+	Remover
 }
 
 // Addresser models something with a unique address.
@@ -33,6 +34,11 @@ type Preparer interface {
 // Accepter models the second-phase responsibilities of an acceptor.
 type Accepter interface {
 	Accept(ctx context.Context, key string, b Ballot, value []byte) error
+}
+
+// Remover models the garbage collection responsibilities of an acceptor.
+type Remover interface {
+	RemoveIfEmpty(ctx context.Context, key string) error
 }
 
 // ChangeFunc models client change proposals.
@@ -60,6 +66,7 @@ type LocalProposer struct {
 	ballot    Ballot
 	preparers map[string]Preparer
 	accepters map[string]Accepter
+	removers  map[string]Remover
 	logger    log.Logger
 }
 
@@ -289,5 +296,37 @@ func (p *LocalProposer) RemoveAccepter(target Acceptor) error {
 		return ErrNotFound
 	}
 	delete(p.accepters, target.Address())
+	return nil
+}
+
+// FastForward increments the ballot number's counter by one.
+// It's used by the garbage collection process, to delete keys.
+func (p *LocalProposer) FastForward() error {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+	p.ballot.inc()
+	return nil
+}
+
+// RemoveIfEmpty tells each acceptor to remove the given key if it's empty. This
+// is a special method for garbage collection that requires a quorum of 100%.
+func (p *LocalProposer) RemoveIfEmpty(ctx context.Context, key string) error {
+	p.mtx.Lock()
+	defer p.mtx.Unlock()
+
+	// Scatter.
+	results := make(chan error, len(p.removers))
+	for _, r := range p.removers {
+		results <- r.RemoveIfEmpty(ctx, key)
+	}
+
+	// Gather. Need a quorum of 100%.
+	for i := 0; i < cap(results); i++ {
+		if err := <-results; err != nil {
+			return err
+		}
+	}
+
+	// Good.
 	return nil
 }
