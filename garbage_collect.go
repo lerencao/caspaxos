@@ -27,8 +27,12 @@ func GarbageCollect(ctx context.Context, key string, delay time.Duration, logger
 			return err
 		} else if err != nil {
 			level.Debug(logger).Log("broadcast", "failed", "err", err)
-			time.Sleep(time.Second)
-			continue
+			select {
+			case <-time.After(time.Second):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		// From the paper: "(b) For each proposer, fast-forwards its counter to
