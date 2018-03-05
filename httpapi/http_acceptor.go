@@ -50,6 +50,7 @@ func NewAcceptorServer(acceptor caspaxos.Acceptor, logger log.Logger) AcceptorSe
 		r = r.Methods("POST").HeadersRegexp(ballotHeaderKey, "([0-9]+)/([0-9]+)").Subrouter()
 		r.HandleFunc("/prepare/{key}", as.handlePrepare)
 		r.HandleFunc("/accept/{key}", as.handleAccept)
+		r.HandleFunc("/remove-if-empty/{key}", as.handleRemoveIfEmpty)
 		as.Handler = r
 	}
 	return as
@@ -129,6 +130,36 @@ func (as AcceptorServer) handleAccept(w http.ResponseWriter, r *http.Request) {
 	level.Debug(as.logger).Log("invoking", "Accept", "key", key, "B", b, "value", string(valueBytes))
 	if err = as.acceptor.Accept(r.Context(), key, b, valueBytes); err != nil {
 		http.Error(w, err.Error(), http.StatusNotAcceptable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintln(w, "OK")
+}
+
+func (as AcceptorServer) handleRemoveIfEmpty(w http.ResponseWriter, r *http.Request) {
+	iw := &interceptingWriter{w, http.StatusOK}
+	defer func(begin time.Time) {
+		level.Info(as.logger).Log(
+			"handler", "handleRemoveIfEmpty",
+			"method", r.Method,
+			"url", r.URL.String(),
+			"took", time.Since(begin),
+			"status", iw.code,
+		)
+	}(time.Now())
+	w = iw
+
+	vars := mux.Vars(r)
+	key := vars["key"]
+	if key == "" {
+		http.Error(w, "no key specified", http.StatusBadRequest)
+		return
+	}
+
+	level.Debug(as.logger).Log("invoking", "RemoveIfEmpty", "key", key)
+	if err := as.acceptor.RemoveIfEmpty(r.Context(), key); err != nil {
+		http.Error(w, err.Error(), http.StatusPreconditionFailed)
 		return
 	}
 
@@ -216,6 +247,34 @@ func (ac AcceptorClient) Accept(ctx context.Context, key string, b caspaxos.Ball
 	}
 
 	ballot2header(b, req.Header)
+	req = req.WithContext(ctx)
+	resp, err := client.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "executing HTTP request")
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return errors.New(resp.Status)
+	}
+
+	return nil
+}
+
+// RemoveIfEmpty implements caspaxos.Acceptor by making an HTTP request to the remote
+// acceptor API.
+func (ac AcceptorClient) RemoveIfEmpty(ctx context.Context, key string) error {
+	client := ac.HTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	u := *ac.URL
+	u.Path = fmt.Sprintf("/remove-if-empty/%s", url.PathEscape(key))
+	req, err := http.NewRequest("POST", u.String(), nil)
+	if err != nil {
+		return errors.Wrap(err, "constructing HTTP request")
+	}
+
 	req = req.WithContext(ctx)
 	resp, err := client.Do(req)
 	if err != nil {

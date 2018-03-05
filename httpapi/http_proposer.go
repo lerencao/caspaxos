@@ -87,6 +87,9 @@ func cas(version uint64, value []byte) caspaxos.ChangeFunc {
 //         Returns 404 Not Found if the key doesn't exist.
 //         Returns 412 Precondition Failed on version error.
 //
+//     POST /ff
+//         Fast-forwards the ballot number counter by one.
+//
 type ProposerServer struct {
 	http.Handler
 	proposer caspaxos.Proposer
@@ -105,6 +108,7 @@ func NewProposerServer(proposer caspaxos.Proposer, logger log.Logger) ProposerSe
 		r.Methods("GET").Path("/{key}").HandlerFunc(ps.handleGet)
 		r.Methods("POST").Path("/{key}").HandlerFunc(ps.handlePost)
 		r.Methods("DELETE").Path("/{key}").HandlerFunc(ps.handleDelete)
+		r.Methods("POST").Path("/ff").HandlerFunc(ps.handleFastForward)
 		r.NotFoundHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Proposer encountered unrecognized request path: "+r.URL.String(), http.StatusNotFound)
 		})
@@ -262,6 +266,15 @@ func (ps ProposerServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondErrorf(w, http.StatusNotImplemented, "delete key %s version %d not yet implemented", key, version)
+}
+
+func (ps ProposerServer) handleFastForward(w http.ResponseWriter, r *http.Request) {
+	if err := ps.proposer.FastForward(); err != nil {
+		respondError(w, http.StatusInternalServerError, err)
+	}
+	respondSuccess(w, map[string]interface{}{
+		"msg": "fast-forward successful",
+	})
 }
 
 func respondSuccess(w http.ResponseWriter, m map[string]interface{}) {
