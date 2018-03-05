@@ -136,19 +136,19 @@ func (ps ProposerServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	returnedValue, err := ps.proposer.Propose(r.Context(), key, read)
+	newState, err := ps.proposer.Propose(r.Context(), key, read)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "Propose failed"))
 		return
 	}
 
-	if returnedValue == nil {
+	if newState == nil {
 		respondErrorf(w, http.StatusNotFound, "key %s doesn't exist", key)
 		return
 	}
 
 	var vv versionValue
-	if err := vv.UnmarshalBinary(returnedValue); err != nil {
+	if err := vv.UnmarshalBinary(newState); err != nil {
 		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "error decoding returned state"))
 		return
 	}
@@ -198,15 +198,15 @@ func (ps ProposerServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	value = []byte(s)
 
-	returnedValue, err := ps.proposer.Propose(r.Context(), key, cas(version, value))
+	newState, err := ps.proposer.Propose(r.Context(), key, cas(version, value))
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "Propose failed"))
 		return
 	}
 
 	var vv versionValue
-	if returnedValue != nil {
-		if err := vv.UnmarshalBinary(returnedValue); err != nil {
+	if newState != nil {
+		if err := vv.UnmarshalBinary(newState); err != nil {
 			respondError(w, http.StatusInternalServerError, errors.Wrap(err, "error decoding returned state"))
 			return
 		}
@@ -238,7 +238,7 @@ func (ps ProposerServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 	iw := &interceptingWriter{w, http.StatusOK}
 	defer func(begin time.Time) {
 		level.Info(ps.logger).Log(
-			"handler", "handlePost",
+			"handler", "handleDelete",
 			"method", r.Method,
 			"url", r.URL.String(),
 			"took", time.Since(begin),
@@ -246,6 +246,9 @@ func (ps ProposerServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		)
 	}(time.Now())
 	w = iw
+
+	// Delete is equivalent to update to empty value, followed by a GC.
+	// This code is duplicated from handlePost, for now.
 
 	vars := mux.Vars(r)
 	key := vars["key"]
@@ -265,7 +268,42 @@ func (ps ProposerServer) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondErrorf(w, http.StatusNotImplemented, "delete key %s version %d not yet implemented", key, version)
+	value := []byte{}
+	newState, err := ps.proposer.Propose(r.Context(), key, cas(version, value))
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, errors.Wrap(err, "Propose failed"))
+		return
+	}
+
+	var vv versionValue
+	if newState != nil {
+		if err := vv.UnmarshalBinary(newState); err != nil {
+			respondError(w, http.StatusInternalServerError, errors.Wrap(err, "error decoding returned state"))
+			return
+		}
+	}
+
+	response := map[string]interface{}{
+		"provided": map[string]interface{}{
+			"key":     key,
+			"version": version,
+			"value":   string(prettyPrint(value)),
+		},
+		"returned": map[string]interface{}{
+			"key":     key,
+			"version": vv.version,
+			"value":   string(prettyPrint(vv.value)),
+		},
+	}
+
+	if bytes.Compare(vv.value, value) != 0 { // CAS failure
+		response["error"] = "compare-and-swap failure; likely version incompatibility"
+		respondErrorMap(w, http.StatusPreconditionFailed, response)
+		return
+	}
+
+	// fast := strconv.ParseBool(r.URL.Query().Get("fast"))
+	// caspaxos.GarbageCollect() :<
 }
 
 func (ps ProposerServer) handleFastForward(w http.ResponseWriter, r *http.Request) {

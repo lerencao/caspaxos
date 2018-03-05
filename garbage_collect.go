@@ -49,10 +49,19 @@ func GarbageCollect(ctx context.Context, key string, delay time.Duration, logger
 		// its value is empty."
 		var err error
 		for _, p := range proposers {
-			if err = p.RemoveIfEmpty(ctx, key); err != nil {
-				continue // failed, retry with the next proposer
+			// There is no a prioiri list of acceptors, that information is
+			// known only to proposers. So we ask the first proposer to
+			// broadcast the request to all of its known acceptors. If that
+			// fails, we try the next proposer.
+			err = p.RemoveIfEmpty(ctx, key)
+			switch {
+			case err == nil:
+				return nil // success, great
+			case err == context.Canceled:
+				return err // fatal, give up
+			case err != nil:
+				continue // nonfatal, retry
 			}
-			return nil // success, great
 		}
 
 		// All failed.
