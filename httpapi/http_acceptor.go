@@ -27,10 +27,14 @@ import (
 //         Expects and returns "X-Caspaxos-Ballot: Counter/ID" header.
 //         Returns 412 Precondition Failed on protocol error.
 //
-//     POST /accept/{key}?value=VALUE
+//     POST /accept/{key}?value={value}
 //         Accept request for the given key and value. Value may be empty.
 //         Expects "X-Caspaxos-Ballot: Counter/ID" header.
 //         Returns 406 Not Acceptable on protocol error.
+//
+//     POST /remove-if-empty/{key}
+//         Removes the given key, if and only if its value is empty.
+//         Returns 412 Precondition Failed if the value was not empty.
 //
 type AcceptorServer struct {
 	http.Handler
@@ -47,10 +51,9 @@ func NewAcceptorServer(acceptor caspaxos.Acceptor, logger log.Logger) AcceptorSe
 	}
 	{
 		r := mux.NewRouter().StrictSlash(true)
-		r = r.Methods("POST").HeadersRegexp(ballotHeaderKey, "([0-9]+)/([0-9]+)").Subrouter()
-		r.HandleFunc("/prepare/{key}", as.handlePrepare)
-		r.HandleFunc("/accept/{key}", as.handleAccept)
-		r.HandleFunc("/remove-if-empty/{key}", as.handleRemoveIfEmpty)
+		r.Methods("POST").HeadersRegexp(ballotHeaderKey, "([0-9]+)/([0-9]+)").Subrouter().HandleFunc("/prepare/{key}", as.handlePrepare)
+		r.Methods("POST").HeadersRegexp(ballotHeaderKey, "([0-9]+)/([0-9]+)").Subrouter().HandleFunc("/accept/{key}", as.handleAccept)
+		r.Methods("POST").Subrouter().HandleFunc("/remove-if-empty/{key}", as.handleRemoveIfEmpty)
 		as.Handler = r
 	}
 	return as
